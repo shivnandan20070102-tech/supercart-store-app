@@ -12,6 +12,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.webkit.GeolocationPermissions;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -26,6 +27,9 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -35,6 +39,10 @@ public class MainActivity extends AppCompatActivity {
 
     private static final int REQ_LOCATION = 1001;
     private static final int REQ_FILE = 1002;
+    private static final int REQ_CAMERA = 1003;
+
+    // Pending camera request from the website (barcode scanner), answered after the user taps Allow / Deny.
+    private PermissionRequest pendingCameraRequest;
 
     private WebView webView;
     private ProgressBar progressBar;
@@ -50,6 +58,17 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Keep the website below the status bar and above the navigation buttons
+        // (Android 15 otherwise draws the app under them).
+        final View root = findViewById(R.id.root);
+        ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()
+                    | WindowInsetsCompat.Type.displayCutout());
+            Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
+            v.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, ime.bottom));
+            return WindowInsetsCompat.CONSUMED;
+        });
 
         webView = findViewById(R.id.webview);
         progressBar = findViewById(R.id.progress);
@@ -133,6 +152,34 @@ public class MainActivity extends AppCompatActivity {
                         REQ_LOCATION);
             }
 
+            // The website asked for the camera (barcode scanning).
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                runOnUiThread(() -> {
+                    boolean wantsCamera = false;
+                    for (String r : request.getResources()) {
+                        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) wantsCamera = true;
+                    }
+                    if (!wantsCamera) {
+                        request.deny();
+                        return;
+                    }
+                    if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA)
+                            == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                    } else {
+                        pendingCameraRequest = request;
+                        ActivityCompat.requestPermissions(MainActivity.this,
+                                new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
+                    }
+                });
+            }
+
+            @Override
+            public void onPermissionRequestCanceled(PermissionRequest request) {
+                pendingCameraRequest = null;
+            }
+
             @Override
             public void onGeolocationPermissionsHidePrompt() {
                 pendingGeoCallback = null;
@@ -195,6 +242,22 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_CAMERA) {
+            boolean ok = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (pendingCameraRequest != null) {
+                if (ok) {
+                    pendingCameraRequest.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                } else {
+                    pendingCameraRequest.deny();
+                }
+                pendingCameraRequest = null;
+            }
+            if (!ok) {
+                Toast.makeText(this, "Camera permission ke bina barcode scan nahi hoga",
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
         if (requestCode == REQ_LOCATION) {
             boolean granted = false;
             for (int r : grantResults) {
